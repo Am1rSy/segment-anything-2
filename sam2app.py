@@ -172,56 +172,110 @@ def sam_click(predictor, origin_frame, inference_state, point_mode, click_stack,
         masked_frame = show_mask(mask, image=masked_frame, obj_id=obj_id)
     return predictor, masked_frame, click_stack
 
+
 def begin_track(predictor, inference_state, io_args, input_video):
-    # run propagation throughout the video and collect the results in a dict
-    video_segments = {}  # video_segments contains the per-frame segmentation results
-    for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
-        video_segments[out_frame_idx] = {
-            out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-            for i, out_obj_id in enumerate(out_obj_ids)
-        }
-    height, width = out_mask_logits[0][0].shape
+    
+    
     print(height,width)
     fourcc =  cv2.VideoWriter_fourcc(*"mp4v")
     video_name = os.path.basename(input_video).split('.')[0]
     cap = cv2.VideoCapture(input_video)
     fps = cap.get(cv2.CAP_PROP_FPS)
+    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
     out_path = f'{io_args["tracking_result_dir"]}/{video_name}output.mp4'
     out = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
     
     frame_files = sorted([f for f in os.listdir(io_args['video_frame']) if f.endswith('.jpg')])
-    
-    # total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    for frame_file in frame_files:
+    # run propagation throughout the video and collect the results in a dict
+    video_segments = {}  # video_segments contains the per-frame segmentation results
+    for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
+        ## get original frames
         frame_idx = int(os.path.splitext(frame_file)[0])
         frame_path = os.path.join(io_args['video_frame'], frame_file)
+        ## prepare to add mask
         image = cv2.imread(frame_path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         masked_frame = image.copy()
-        if frame_idx in video_segments:
-            for obj_id, mask in video_segments[frame_idx].items():
+        
+        video_segments[out_frame_idx] = {
+            out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+            for i, out_obj_id in enumerate(out_obj_ids)
+        }
+        ## add mask depending on num of obj in frame
+        for obj_id, mask in video_segments[out_frame_idx].items():
                 masked_frame = show_mask(mask, image=masked_frame, obj_id=obj_id)
-                mask_output_path = os.path.join(io_args['output_mask_dir'], f'{obj_id}_{frame_idx:07d}.png')
+                mask_output_path = os.path.join(io_args['output_mask_dir'], f'{obj_id}_{out_frame_idx:07d}.png')
                 cv2.imwrite(mask_output_path, show_mask(mask))
+        ## save annotated (masked) image
         combined_output_path = os.path.join(io_args['output_masked_frame_dir'], f'{frame_idx:07d}.png')
         combined_image_bgr = cv2.cvtColor(masked_frame, cv2.COLOR_RGB2BGR)
+        yield combined_image_bgr, None, None
         out.write(combined_image_bgr)
         cv2.imwrite(combined_output_path, combined_image_bgr)
-        # if frame_idx == frame_num:
-        #     final_masked_frame = masked_frame
+        
     out.release()
-    # output_frames = int(total_frames * scale_slider)
-    # output_frames = len([name for name in os.listdir(io_args['output_masked_frame_dir']) if os.path.isfile(os.path.join(io_args['output_masked_frame_dir'], name)) and name.endswith('.png')])
-    # out_fps = fps * output_frames / total_frames
-    # ffmpeg.input(os.path.join(io_args['output_masked_frame_dir'], '%07d.png'), framerate=out_fps).output(f'{io_args["tracking_result_dir"]}/{video_name}output.mp4', vcodec='h264_nvenc', pix_fmt='yuv420p').run(overwrite_output=True)
-     # zip predicted mask
+        
+   
+    
     zip_path = f"{io_args['tracking_result_dir']}/{video_name}_pred_mask.zip"
     os.system(f"zip -r {zip_path} {io_args['output_mask_dir']}")
     print("done")
     
-    return  out_path, out_path, zip_path
+    return  combined_image_bgr, out_path, zip_path
+
+
+# def begin_track(predictor, inference_state, io_args, input_video):
+#     # run propagation throughout the video and collect the results in a dict
+#     video_segments = {}  # video_segments contains the per-frame segmentation results
+#     for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
+#         video_segments[out_frame_idx] = {
+#             out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+#             for i, out_obj_id in enumerate(out_obj_ids)
+#         }
+#     height, width = out_mask_logits[0][0].shape
+#     print(height,width)
+#     fourcc =  cv2.VideoWriter_fourcc(*"mp4v")
+#     video_name = os.path.basename(input_video).split('.')[0]
+#     cap = cv2.VideoCapture(input_video)
+#     fps = cap.get(cv2.CAP_PROP_FPS)
+#     cap.release()
+#     out_path = f'{io_args["tracking_result_dir"]}/{video_name}output.mp4'
+#     out = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
+    
+#     frame_files = sorted([f for f in os.listdir(io_args['video_frame']) if f.endswith('.jpg')])
+    
+#     # total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+#     for frame_file in frame_files:
+#         frame_idx = int(os.path.splitext(frame_file)[0])
+#         frame_path = os.path.join(io_args['video_frame'], frame_file)
+#         image = cv2.imread(frame_path)
+#         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+#         masked_frame = image.copy()
+#         if frame_idx in video_segments:
+#             for obj_id, mask in video_segments[frame_idx].items():
+#                 masked_frame = show_mask(mask, image=masked_frame, obj_id=obj_id)
+#                 mask_output_path = os.path.join(io_args['output_mask_dir'], f'{obj_id}_{frame_idx:07d}.png')
+#                 cv2.imwrite(mask_output_path, show_mask(mask))
+#         combined_output_path = os.path.join(io_args['output_masked_frame_dir'], f'{frame_idx:07d}.png')
+#         combined_image_bgr = cv2.cvtColor(masked_frame, cv2.COLOR_RGB2BGR)
+#         out.write(combined_image_bgr)
+#         cv2.imwrite(combined_output_path, combined_image_bgr)
+#         # if frame_idx == frame_num:
+#         #     final_masked_frame = masked_frame
+#     out.release()
+#     # output_frames = int(total_frames * scale_slider)
+#     # output_frames = len([name for name in os.listdir(io_args['output_masked_frame_dir']) if os.path.isfile(os.path.join(io_args['output_masked_frame_dir'], name)) and name.endswith('.png')])
+#     # out_fps = fps * output_frames / total_frames
+#     # ffmpeg.input(os.path.join(io_args['output_masked_frame_dir'], '%07d.png'), framerate=out_fps).output(f'{io_args["tracking_result_dir"]}/{video_name}output.mp4', vcodec='h264_nvenc', pix_fmt='yuv420p').run(overwrite_output=True)
+#      # zip predicted mask
+#     zip_path = f"{io_args['tracking_result_dir']}/{video_name}_pred_mask.zip"
+#     os.system(f"zip -r {zip_path} {io_args['output_mask_dir']}")
+#     print("done")
+    
+#     return  out_path, out_path, zip_path
 
 def sam2_app():
     ##########################################################
