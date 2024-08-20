@@ -10,3 +10,6 @@ outputs/*
 checkpoints/*.pt
 /checkpoint
 tracking_results/*
+/tracking_results
+/tracking_results/A1_8-5s
+*.png
