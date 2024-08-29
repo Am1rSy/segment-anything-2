@@ -13,27 +13,12 @@ from sam2.build_sam import build_sam2_video_predictor
 # from skimage.morphology.binary import binary_dilation
 import matplotlib.pyplot as plt
 import ffmpeg
+import shutil
 
-def show_res_by_slider(frame_percent, io_args):
-    combined_output_path = io_args['output_masked_frame_dir']
-    # print(combined_output_path)
-    ## get directory of images
-    combined_imgs_path = sorted(glob(combined_output_path+'/*.png'))
-    
-    total_frames = len(combined_imgs_path)
-    
-    chosen_frame_idx = math.floor(total_frames * frame_percent/100) # get frame based on percentage
-    if frame_percent == 100:
-        chosen_frame_idx = chosen_frame_idx -1 # comply with pythonic notation
-    
-    chosen_frame_path = combined_imgs_path[chosen_frame_idx]
-    chosen_frame_img = cv2.imread(chosen_frame_path)
-    chosen_frame_img = cv2.cvtColor(chosen_frame_img, cv2.COLOR_BGR2RGB)
-    
-    return chosen_frame_img, f'Chosen Frame: {chosen_frame_idx+1}/{total_frames}', chosen_frame_idx
-    
-    
-    
+def delete_dir(path):
+    if os.path.exists(path):
+        shutil.rmtree(path)
+
 def get_meta_from_video(input_video, prgrs_bar=gr.Progress()):
     if input_video is None:
         return None, None,""
@@ -47,16 +32,19 @@ def get_meta_from_video(input_video, prgrs_bar=gr.Progress()):
     io_args = {
         # 'file_name':video_name,
         'tracking_result_dir': tracking_result_dir,
-        'video_frame': f'{tracking_result_dir}/frame',
-        'output_mask_dir': f'{tracking_result_dir}/{video_name}_masks',
-        'output_masked_frame_dir': f'{tracking_result_dir}/{video_name}_masked_frames',
-        'output_mask_dir_png': f'{tracking_result_dir}/{video_name}_masks/png',
-        'output_masked_frame_dir_png': f'{tracking_result_dir}/{video_name}_masked_frames/png',
-        'output_mask_dir_np': f'{tracking_result_dir}/{video_name}_masks/numpy',
-        'output_masked_frame_dir_np': f'{tracking_result_dir}/{video_name}_masked_frames/numpy',
+        'video_frame': f'{tracking_result_dir}/outputs/frame',
+        'output_mask_dir': f'{tracking_result_dir}/outputs/{video_name}_masks',
+        'output_masked_frame_dir': f'{tracking_result_dir}/outputs/{video_name}_masked_frames',
+        'output_mask_dir_png': f'{tracking_result_dir}/outputs/{video_name}_masks/png',
+        # 'output_masked_frame_dir_png': f'{tracking_result_dir}/{video_name}_masked_frames/png',
+        'output_mask_dir_np': f'{tracking_result_dir}/outputs/{video_name}_masks/numpy',
+        # 'output_masked_frame_dir_np': f'{tracking_result_dir}/{video_name}_masked_frames/numpy',
         # 'output_video': f'{tracking_result_dir}/{video_name}_seg.mp4', # keep same format as input video
         # 'zip_mask': f'{tracking_result_dir}/{video_name}_pred_mask.zip'
     }
+    
+    # remove existing files
+    delete_dir(io_args["tracking_result_dir"])
     
     #create directory and folder
     for key in io_args:   
@@ -78,10 +66,10 @@ def get_meta_from_video(input_video, prgrs_bar=gr.Progress()):
     frame_interval = 1
     print(frame_interval)
     ffmpeg.input(input_video).output(
-        os.path.join(io_args["video_frame"], '%07d.png'), q=2, start_number=0, 
+        os.path.join(io_args["video_frame"], '%07d.jpg'), q=2, start_number=0, 
         vf=rf'select=not(mod(n\,{frame_interval}))', vsync='vfr'
     ).run()
-    first_frame_path = os.path.join(io_args["video_frame"], '0000000.png')
+    first_frame_path = os.path.join(io_args["video_frame"], '0000000.jpg')
     first_frame = cv2.imread(first_frame_path)
     first_frame_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
     # while success: #extract all the frames
@@ -98,9 +86,9 @@ def get_meta_from_video(input_video, prgrs_bar=gr.Progress()):
     if torch.cuda.get_device_properties(0).major >= 8:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
-    predictor, inference_state, curr_obj_id = init_sam2(io_args)
+    predictor, inference_state = init_sam2(io_args)
     prgrs_bar(1, desc="SAM2 initialised!")
-    return first_frame_rgb, first_frame_rgb, io_args, predictor, inference_state, curr_obj_id,""
+    return first_frame_rgb, first_frame_rgb, io_args, predictor, inference_state, ""
 
 
 def init_sam2(io_args):
@@ -111,33 +99,46 @@ def init_sam2(io_args):
     inference_state = predictor.init_state(video_path=io_args['video_frame'])
     predictor.reset_state(inference_state)
     
-    curr_obj_id = 1
+    # curr_obj_id = dict()
     print("SAM initialised!")
-    return predictor, inference_state, curr_obj_id
+    return predictor, inference_state
 
-def get_click_prompt(click_stack, point):
+# def get_click_prompt(click_stack, point):
 
-    click_stack[0].append(point["coord"])
-    click_stack[1].append(point["mode"]
-    )
+#     click_stack[0].append(point["coord"])
+#     click_stack[1].append(point["mode"]
+#     )
     
-    prompt = {
-        "points_coord":click_stack[0],
-        "points_mode":click_stack[1],
-        "multimask":"True",
-    }
+#     prompt = {
+#         "points_coord":click_stack[0],
+#         "points_mode":click_stack[1],
+#         "multimask":"True",
+#     }
 
-    return prompt
+#     return prompt
 
-def add_new_obj(obj_ids):
-    obj_ids += 1
-    return obj_ids
-    
+def add_new_obj(curr_obj_id, obj_counter):
+    obj_counter += 1
+    curr_obj_id = obj_counter
+    return curr_obj_id, obj_counter
+
+def draw_outline(mask, frame):
+    _, binary_mask = cv2.threshold(mask, 0, 255, cv2.THRESH_BINARY)
+
+    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    cv2.drawContours(frame, contours, -1, (0, 0, 255), 2)
+
+    return frame
+
     
 def show_mask(mask, image=None, obj_id=None):
-    cmap = plt.get_cmap("tab20")
+    # cmap = plt.get_cmap("tab20")
     cmap_idx = 0 if obj_id is None else obj_id
-    color = np.array([*cmap(cmap_idx)[:3], 0.6])
+    # color = np.array([*cmap(cmap_idx)[:3], 0.6])
+    np.random.seed(cmap_idx)
+    color = np.concatenate([np.random.random(3), [0.6]])
+
     
     h, w = mask.shape[-2:]
     mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
@@ -158,48 +159,51 @@ def show_mask(mask, image=None, obj_id=None):
     return mask_image
 
     
-def sam_click(predictor, origin_frame, inference_state, point_mode, click_stack, curr_obj_id,frame_num,evt:gr.SelectData):
+def sam_click(predictor, origin_frame, inference_state, point_mode, obj_ids_dict, curr_obj_id,frame_num, obj_stack,evt:gr.SelectData):
     """
     Args:
         origin_frame: nd.array
         click_stack: [[coordinate], [point_mode]]
-    """
-
+    """ 
     print("Click")
+    point = np.array([[evt.index[0], evt.index[1]]], dtype=np.float32)
     # for mode, `1` means positive click and `0` means negative click
     if point_mode == "Positive":
-        point = {"coord":  np.array([[evt.index[0], evt.index[1]]], dtype=np.float32), "mode": np.array([1], np.int32)}
+        if curr_obj_id in obj_ids_dict.keys():
+            obj_ids_dict[curr_obj_id]["coord"]= np.append(obj_ids_dict[curr_obj_id]["coord"], point, axis=0)
+            # obj_ids_dict[curr_obj_id]["coord"].append(np.array([[evt.index[0], evt.index[1]]], dtype=np.float32))
+            obj_ids_dict[curr_obj_id]["mode"]= np.append(obj_ids_dict[curr_obj_id]["mode"], np.array([1], np.int32), axis=0)
+        else:
+            obj_ids_dict[curr_obj_id] = {"coord": point, 
+                                         "mode": np.array([1], np.int32)}
     else:
-        # TODO：add everything positive points
-        point = {"coord": np.array([[evt.index[0], evt.index[1]]], dtype=np.float32), "mode": np.array([1], np.int32)}
-
-    # get click prompts for sam to predict mask
-    # click_prompt = get_click_prompt(click_stack, point)
-    click_stack[0].append(point["coord"])
-    click_stack[1].append(point["mode"]
-    )
-
-    # if inference_state["tracking_has_started"]:
-    #     ann_frame_idx = frame_num
-    # else: # only for first initialisation
-    ann_frame_idx = frame_num
-    print(point)
+        if curr_obj_id in obj_ids_dict.keys():
+            # obj_ids_dict[curr_obj_id]["coord"].append(np.array([[evt.index[0], evt.index[1]]], dtype=np.float32))
+            obj_ids_dict[curr_obj_id]["coord"]= np.append(obj_ids_dict[curr_obj_id]["coord"], point, axis=0)
+            obj_ids_dict[curr_obj_id]["mode"]= np.append(obj_ids_dict[curr_obj_id]["mode"], np.array([0], np.int32), axis=0)
+        else:
+            obj_ids_dict[curr_obj_id] = {"coord": point, 
+                                         "mode": np.array([0], np.int32)}
+    obj_stack.append(curr_obj_id)
+    # ann_frame_idx = frame_num
+    print([evt.index[0], evt.index[1]])
     print(frame_num)
     # add mask according to prompt
     _, out_obj_ids, out_mask_logits = predictor.add_new_points(
         inference_state=inference_state,
-        frame_idx=ann_frame_idx,
+        frame_idx=frame_num,
         obj_id=curr_obj_id,
-        points=point["coord"],
-        labels=point['mode'],
+        points=obj_ids_dict[curr_obj_id]["coord"],
+        labels=obj_ids_dict[curr_obj_id]['mode'],
     )
     print(curr_obj_id)
     masked_frame = origin_frame.copy()
-    print(out_obj_ids)
+    print(obj_ids_dict[curr_obj_id])
     for i, obj_id in enumerate(out_obj_ids):
         mask = (out_mask_logits[i] > 0.0).cpu().numpy()
         masked_frame = show_mask(mask, image=masked_frame, obj_id=obj_id)
-    return predictor, masked_frame, click_stack
+    # masked_frame =cv2.cvtColor(masked_frame, cv2.COLOR_RGB2BGR)
+    return predictor, masked_frame, obj_ids_dict, obj_stack
 
 def begin_track(predictor, inference_state, io_args, input_video, old_video_segments, frame_num):
     
@@ -226,7 +230,7 @@ def begin_track(predictor, inference_state, io_args, input_video, old_video_segm
             out.write(combined_image_bgr)
     
     temp_video_segments = copy.deepcopy(old_video_segments) # need to make copy to prevent same reference with new
-    frame_files = sorted([f for f in os.listdir(io_args['video_frame']) if f.endswith('.png')])
+    frame_files = sorted([f for f in os.listdir(io_args['video_frame']) if f.endswith('.jpg')])
     # run propagation throughout the video and collect the results in a dict
     if old_video_segments:
         new_video_segments = old_video_segments  # video_segments contains the per-frame segmentation results (frame id: {obj_id: (1,H,W)})
@@ -245,36 +249,69 @@ def begin_track(predictor, inference_state, io_args, input_video, old_video_segm
             out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
             for i, out_obj_id in enumerate(out_obj_ids)
         }
+        
+        ## combine future mask addons
         if temp_video_segments is not None and temp_video_segments.get(out_frame_idx):
             new_video_segments[out_frame_idx] = temp_video_segments[out_frame_idx] | new_video_segments[out_frame_idx]
+        
+        mask_output = np.zeros_like(masked_frame)
+        mask_np_output = np.zeros_like(masked_frame[...,0])
+        # print(mask_np_output.shape)
         ## add mask depending on num of obj in frame
         for obj_id, mask in new_video_segments[out_frame_idx].items():
                 masked_frame = show_mask(mask, image=masked_frame, obj_id=obj_id)
-                mask_output_path = os.path.join(io_args['output_mask_dir'], f'{obj_id}_{out_frame_idx:07d}.png')
-                cv2.imwrite(mask_output_path, show_mask(mask))
+                mask_output = show_mask(mask, image=mask_output, obj_id=obj_id)
+                mask_np_output[mask[0]==True] = obj_id
+        yield masked_frame, None, None, None
         ## save annotated (masked) image
+        mask_output_path = os.path.join(io_args['output_mask_dir_png'], f'{out_frame_idx:07d}.png')
+        mask_output = cv2.cvtColor(mask_output, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(mask_output_path, mask_output)
+        
+        
         combined_output_path = os.path.join(io_args['output_masked_frame_dir'], f'{out_frame_idx:07d}.png')
         combined_image_bgr = cv2.cvtColor(masked_frame, cv2.COLOR_RGB2BGR)
-        yield combined_image_bgr, None, None, None
+        # combined_image_bgr = masked_frame
+        
         
         out.write(combined_image_bgr)
         cv2.imwrite(combined_output_path, combined_image_bgr)
+        np_file = np.array(mask_np_output)
+        np.save(f"{io_args['output_mask_dir_np']}/{out_frame_idx:07d}.npy", np_file)
         
     out.release()
-    zip_path = f"{io_args['tracking_result_dir']}/{video_name}_pred_mask.zip"
-    zip_folder(io_args['output_mask_dir'], zip_path)
+    #zip files
+    zip_path = f"{io_args['tracking_result_dir']}/{video_name}.zip"
+    zip_folder(f"{io_args['tracking_result_dir']}/outputs", zip_path)
 
     # os.system(f"zip -r {zip_path} {io_args['output_mask_dir']}")
     print("done")
     
-    yield combined_image_bgr, out_path, zip_path, new_video_segments
+    yield cv2.cvtColor(combined_image_bgr, cv2.COLOR_BGR2RGB), out_path, zip_path, new_video_segments
 
-def send_to_board(io_args, frame_num, video_segments, predictor, inference_state):
+def show_res_by_slider(frame_percent, io_args):
+    combined_output_path = io_args['output_masked_frame_dir']
+    ## get directory of images
+    combined_imgs_path = sorted(glob(combined_output_path+'/*.png'))
+    
+    total_frames = len(combined_imgs_path)
+    
+    chosen_frame_idx = math.floor(total_frames * frame_percent/100) # get frame based on percentage
+    if frame_percent == 100:
+        chosen_frame_idx = chosen_frame_idx -1 # comply with pythonic notation
+    
+    chosen_frame_path = combined_imgs_path[chosen_frame_idx]
+    chosen_frame_img = cv2.imread(chosen_frame_path)
+    chosen_frame_img = cv2.cvtColor(chosen_frame_img, cv2.COLOR_BGR2RGB) 
+    
+    return chosen_frame_img, f'Chosen Frame: {chosen_frame_idx+1}/{total_frames}', chosen_frame_idx
+
+def send_to_board(io_args, frame_num, video_segments, predictor, inference_state, obj_ids_dict):
     combined_output_path = io_args['output_masked_frame_dir']
     
     ## get directory of images
     chosen_frame_path = sorted(glob(combined_output_path+'/*.png'))[frame_num]
-    print(chosen_frame_path)
+    print(f"chosen frame: {chosen_frame_path}")
     chosen_frame_img = cv2.imread(chosen_frame_path)
     chosen_frame_img = cv2.cvtColor(chosen_frame_img, cv2.COLOR_BGR2RGB)
     frame_files = sorted([f for f in os.listdir(io_args['video_frame']) if f.endswith('.jpg')])
@@ -292,7 +329,8 @@ def send_to_board(io_args, frame_num, video_segments, predictor, inference_state
                     obj_mask[0],
         )
     print(video_segments[frame_num].items())
-    return chosen_frame_img, frame_img, frame_num
+    obj_ids_dict = dict()
+    return chosen_frame_img, frame_img, frame_num, obj_ids_dict
 
 def zip_folder(folder_path, output_zip_path):
     with zipfile.ZipFile(output_zip_path, 'w', zipfile.ZIP_STORED) as zipf:
@@ -300,6 +338,34 @@ def zip_folder(folder_path, output_zip_path):
             for file in files:
                 file_path = os.path.join(root, file)
                 zipf.write(file_path, os.path.relpath(file_path, folder_path))
+
+def choose_obj_to_refine(io_args, frame_num, evt:gr.SelectData):
+    # # curr_mask=Seg_Tracker.first_frame_mask
+    # frame_path = os.path.join(io_args['output_mask_dir'], f'{frame_num:07d}.png')
+    # # chosen_frame_img = Image.open(frame_path).convert('P')
+    # chosen_frame_img = cv2.imread(frame_path)
+    # chosen_frame_img = cv2.cvtColor(chosen_frame_img, cv2.COLOR_RGB2BGR)
+    # print(frame_path[frame_num])
+    # idx = chosen_frame_img[evt.index[1],evt.index[0]]
+    # curr_idx_mask = np.where(chosen_frame_img == idx, 1, 0).astype(np.uint8)
+    
+    np_frame_path =os.path.join(io_args['output_mask_dir_np'], f'{frame_num:07d}.npy')
+    chosen_frame = np.load(np_frame_path)
+    obj_id = chosen_frame[evt.index[1],evt.index[0]]
+    chosen_id_mask = np.where(chosen_frame == obj_id, 1, 0).astype(np.uint8)
+    
+    print(type(obj_id))
+    ## get directory of images
+    combined_output_path = io_args['output_masked_frame_dir']
+    chosen_frame_path = sorted(glob(combined_output_path +'/*.png'))[frame_num]
+    total_frames = len(chosen_frame_path)
+    chosen_frame_show = cv2.imread(chosen_frame_path)
+    chosen_frame_show = cv2.cvtColor(chosen_frame_show, cv2.COLOR_BGR2RGB)
+    chosen_frame_show = draw_outline(mask=chosen_id_mask, frame=chosen_frame_show)
+    print(f'Object ID: {obj_id}')
+        
+
+    return chosen_frame_show, f'Chosen Frame: {frame_num+1}/{total_frames}, Chosen Mask ID:{obj_id}', int(obj_id)
 
 def sam2_app():
     ##########################################################
@@ -315,16 +381,18 @@ def sam2_app():
             '''
         )
         
-        click_stack = gr.State([[],[]]) # Storage clicks status
+        # click_stack = gr.State([[],[]]) # Storage clicks status
         origin_frame = gr.State(None)
         predictor = gr.State(None)
-        new_obj_flag = gr.State(None)
+        # new_obj_flag = gr.State(None)
         io_args = gr.State(None)
         inference_state = gr.State(None)
-        curr_obj_id= gr.State(None)
-        obj_ids = gr.State(value=(int(0)))
-        frame_num = gr.State(value=(int(0)))
-        old_video_segments = gr.State(None)
+        # curr_obj_id= gr.State(None)
+        obj_ids_dict = gr.State(dict())
+        frame_num = gr.State(value=int(0))
+        old_video_segments = gr.State(dict())
+        obj_counter = gr.State(value=int(1))
+        obj_stack = gr.State(list())
         
         with gr.Row():
             with gr.Column(scale=0.5):
@@ -354,6 +422,12 @@ def sam2_app():
                             value="Add new object", 
                             interactive=True
                         )
+                        curr_obj_id = gr.Number(
+                            value=1, 
+                            label='Current Object ID', 
+                            interactive=True
+                            )
+                        
                         track_for_video = gr.Button(
                             value="Start Tracking",
                                 interactive=True,
@@ -361,7 +435,7 @@ def sam2_app():
                         
             with gr.Column(scale=0.5):
                 with gr.Accordion("Processed Frames", open=True):
-                    processed_frames = gr.Image(label="processed frame")
+                    processed_frames = gr.Image(label="processed frame", interactive=True)
                     frame_per = gr.Slider(
                         label = "Percentage of Frames Viewed",
                         minimum= 0.0,
@@ -391,7 +465,6 @@ def sam2_app():
                 io_args, 
                 predictor,
                 inference_state, 
-                obj_ids
             ]
         )
         
@@ -410,9 +483,13 @@ def sam2_app():
         
         new_object_button.click(
             fn=add_new_obj,
-            inputs=[obj_ids],
+            inputs=[
+                curr_obj_id,
+                obj_counter
+                ],
             outputs=[
-                obj_ids
+                curr_obj_id,
+                obj_counter
             ]
         )
         first_input_init.select(
@@ -422,14 +499,16 @@ def sam2_app():
                 origin_frame, 
                 inference_state, 
                 point_mode, 
-                click_stack, 
-                obj_ids,
-                frame_num
+                obj_ids_dict, 
+                curr_obj_id,
+                frame_num,
+                obj_stack
             ],
             outputs=[
                 predictor, 
                 first_input_init, 
-                click_stack
+                obj_ids_dict,
+                obj_stack
             ]
         )
         
@@ -456,14 +535,30 @@ def sam2_app():
                 frame_num, 
                 old_video_segments, 
                 predictor, 
-                inference_state
+                inference_state,
+                obj_ids_dict
             ],
             outputs=[
                 first_input_init,
                 origin_frame,
-                frame_num
+                frame_num,
+                obj_ids_dict
             ]
         )
+        
+        processed_frames.select(
+            fn=choose_obj_to_refine,
+            inputs=[
+                io_args, 
+                frame_num
+            ],
+            outputs =[
+                processed_frames,
+                obj_select_text,
+                curr_obj_id
+            ]
+        )
+        
         with gr.Tab(label='Video example'):
             gr.Examples(
                 examples=[
