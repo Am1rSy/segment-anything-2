@@ -9,7 +9,8 @@ import numpy as np
 import os,io
 import copy
 from glob import glob
-from sam2.build_sam import build_sam2_video_predictor
+from sam2.build_sam import build_sam2, build_sam2_video_predictor
+from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 # from skimage.morphology.binary import binary_dilation
 import matplotlib.pyplot as plt
 import ffmpeg
@@ -96,12 +97,20 @@ def init_sam2(io_args):
     model_cfg = "sam2_hiera_l.yaml"
 
     predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
-    inference_state = predictor.init_state(video_path=io_args['video_frame'])
+    inference_state = predictor.init_state(video_path=io_args['video_frame'], offload_state_to_cpu=True, async_loading_frames=True)
     predictor.reset_state(inference_state)
     
     # curr_obj_id = dict()
     print("SAM initialised!")
     return predictor, inference_state
+
+def init_sam2_everything():
+    sam2_checkpoint = "./checkpoint/sam2_hiera_large.pt"
+    model_cfg = "sam2_hiera_l.yaml"
+    
+    sam2_everything = build_sam2(model_cfg, sam2_checkpoint, device ='cuda', apply_postprocessing=False)
+    mask_generator = SAM2AutomaticMaskGenerator(sam2_everything)
+    return mask_generator
 
 # def get_click_prompt(click_stack, point):
 
@@ -204,6 +213,48 @@ def sam_click(predictor, origin_frame, inference_state, point_mode, obj_ids_dict
         masked_frame = show_mask(mask, image=masked_frame, obj_id=obj_id)
     # masked_frame =cv2.cvtColor(masked_frame, cv2.COLOR_RGB2BGR)
     return predictor, masked_frame, obj_ids_dict, obj_stack
+
+def segment_everything(predictor, inference_state, origin_frame):
+    mask_generator = init_sam2_everything()
+    masks = mask_generator.generate(origin_frame)
+    
+    ## remove background annotations
+    sorted_anns = sorted(masks, key=(lambda x: x['area']), reverse=True)
+    sorted_anns.pop(0)
+    # img = np.ones((sorted_anns[0]['segmentation'].shape[0], sorted_anns[0]['segmentation'].shape[1], 4))
+    # img[:,:,3] = 0
+    lowres_side_length = predictor.image_size // 4
+    dtype = next(predictor.parameters()).dtype
+    device = "cuda"
+    for mask_idx, mask_results in enumerate(sorted_anns):
+        # Get mask into form expected by the model
+        mask_tensor = torch.tensor(mask_results["segmentation"], dtype=dtype, device=device)
+        lowres_mask = torch.nn.functional.interpolate(
+            mask_tensor.unsqueeze(0).unsqueeze(0),
+            size=(lowres_side_length, lowres_side_length),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze()
+
+        # Add each mask as it's own 'object' to segment
+        _, out_obj_ids, out_mask_logits = predictor.add_new_mask(
+            inference_state=inference_state,
+            frame_idx=0,
+            obj_id=mask_idx,
+            mask=lowres_mask,
+        )
+        
+    masked_frame = origin_frame.copy()
+    # print(obj_ids_dict[curr_obj_id])
+    for i, obj_id in enumerate(out_obj_ids):
+        mask = (out_mask_logits[i] > 0.0).cpu().numpy()
+        masked_frame = show_mask(mask, image=masked_frame, obj_id=obj_id)
+    print(len(out_obj_ids))
+    del mask_generator
+    return predictor, masked_frame, len(out_obj_ids)
+        
+    
+    
 
 def begin_track(predictor, inference_state, io_args, input_video, old_video_segments, frame_num):
     
@@ -410,7 +461,7 @@ def sam2_app():
                 first_input_init = gr.Image(label='Segment result of first frame',interactive=True)
                 
                 
-                tab_click = gr.Tab(label="Click")
+                tab_click = gr.Tab(label="Manual Click")
                 with tab_click:
                     with gr.Row():
                         point_mode = gr.Radio(
@@ -427,11 +478,17 @@ def sam2_app():
                             label='Current Object ID', 
                             interactive=True
                             )
-                        
-                        track_for_video = gr.Button(
+                tab_auto = gr.Tab(label="Auto Mode")       
+                with tab_auto:
+                    segm_every = gr.Button(
+                        value="Auto Segmentation Mode",
+                        interactive=True
+                    )
+                track_for_video = gr.Button(
                             value="Start Tracking",
                                 interactive=True,
-                                )
+                                )        
+                        
                         
             with gr.Column(scale=0.5):
                 with gr.Accordion("Processed Frames", open=True):
@@ -509,6 +566,20 @@ def sam2_app():
                 first_input_init, 
                 obj_ids_dict,
                 obj_stack
+            ]
+        )
+        # segment every object in image
+        segm_every.click(
+            fn=segment_everything,
+            inputs=[
+                predictor,
+                inference_state,
+                origin_frame
+            ],
+            outputs=[
+                predictor,
+                first_input_init,
+                obj_counter
             ]
         )
         
