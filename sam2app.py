@@ -93,8 +93,10 @@ def get_meta_from_video(input_video, prgrs_bar=gr.Progress()):
 
 
 def init_sam2(io_args):
-    sam2_checkpoint = "./checkpoint/sam2_hiera_large.pt"
-    model_cfg = "sam2_hiera_l.yaml"
+    # sam2_checkpoint = "./checkpoint/sam2_hiera_large.pt"
+    # model_cfg = "sam2_hiera_l.yaml"
+    sam2_checkpoint = "./checkpoint/sam2_hiera_base_plus.pt"
+    model_cfg = "sam2_hiera_b+.yaml"
 
     predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
     inference_state = predictor.init_state(video_path=io_args['video_frame'], offload_state_to_cpu=True, async_loading_frames=True)
@@ -105,8 +107,10 @@ def init_sam2(io_args):
     return predictor, inference_state
 
 def init_sam2_everything():
-    sam2_checkpoint = "./checkpoint/sam2_hiera_large.pt"
-    model_cfg = "sam2_hiera_l.yaml"
+    # sam2_checkpoint = "./checkpoint/sam2_hiera_large.pt"
+    # model_cfg = "sam2_hiera_l.yaml"
+    sam2_checkpoint = "./checkpoint/sam2_hiera_base_plus.pt"
+    model_cfg = "sam2_hiera_b+.yaml"
     
     sam2_everything = build_sam2(model_cfg, sam2_checkpoint, device ='cuda', apply_postprocessing=False)
     mask_generator = SAM2AutomaticMaskGenerator(sam2_everything)
@@ -140,7 +144,16 @@ def draw_outline(mask, frame):
 
     return frame
 
+def labelled_mask(mask, image, obj_id):
+    pos_x, pos_y = np.where(mask[0]) # H, W
+    center =int(np.mean(pos_y)),int(np.mean(pos_x))
+    # print(center)
+    # Using cv2.putText() method
+    image = cv2.putText(image, f'{obj_id}', center, cv2.FONT_HERSHEY_SIMPLEX, 
+                    1, (0,0,0), 2, cv2.LINE_AA)
+    return image
     
+
 def show_mask(mask, image=None, obj_id=None):
     # cmap = plt.get_cmap("tab20")
     cmap_idx = 0 if obj_id is None else obj_id
@@ -162,8 +175,10 @@ def show_mask(mask, image=None, obj_id=None):
         for c in range(3): # iterate through the mask and add into combined image
             colored_mask[..., c] = mask_image[..., c]
         alpha_mask = mask_image[..., 3] / 255.0 #scale mask pixel value to normal
+        # print(np.unique(mask))
         for c in range(3): 
             image[..., c] = np.where(alpha_mask > 0, (1 - alpha_mask) * image[..., c] + alpha_mask * colored_mask[..., c], image[..., c]) # assign value on pixel location that contain the mask
+       
         return image
     return mask_image
 
@@ -209,8 +224,9 @@ def sam_click(predictor, origin_frame, inference_state, point_mode, obj_ids_dict
     masked_frame = origin_frame.copy()
     print(obj_ids_dict[curr_obj_id])
     for i, obj_id in enumerate(out_obj_ids):
-        mask = (out_mask_logits[i] > 0.0).cpu().numpy()
+        mask = (out_mask_logits[i] > 0.0).cpu().numpy() # C,H,W
         masked_frame = show_mask(mask, image=masked_frame, obj_id=obj_id)
+        masked_frame = labelled_mask(mask,masked_frame, obj_id)
     # masked_frame =cv2.cvtColor(masked_frame, cv2.COLOR_RGB2BGR)
     return predictor, masked_frame, obj_ids_dict, obj_stack
 
@@ -223,25 +239,25 @@ def segment_everything(predictor, inference_state, origin_frame):
     sorted_anns.pop(0)
     # img = np.ones((sorted_anns[0]['segmentation'].shape[0], sorted_anns[0]['segmentation'].shape[1], 4))
     # img[:,:,3] = 0
-    lowres_side_length = predictor.image_size // 4
+    # lowres_side_length = predictor.image_size // 4
     dtype = next(predictor.parameters()).dtype
     device = "cuda"
     for mask_idx, mask_results in enumerate(sorted_anns):
         # Get mask into form expected by the model
         mask_tensor = torch.tensor(mask_results["segmentation"], dtype=dtype, device=device)
-        lowres_mask = torch.nn.functional.interpolate(
-            mask_tensor.unsqueeze(0).unsqueeze(0),
-            size=(lowres_side_length, lowres_side_length),
-            mode="bilinear",
-            align_corners=False,
-        ).squeeze()
+        # lowres_mask = torch.nn.functional.interpolate(
+        #     mask_tensor.unsqueeze(0).unsqueeze(0),
+        #     size=(lowres_side_length, lowres_side_length),
+        #     mode="bilinear",
+        #     align_corners=False,
+        # ).squeeze()
 
         # Add each mask as it's own 'object' to segment
         _, out_obj_ids, out_mask_logits = predictor.add_new_mask(
             inference_state=inference_state,
             frame_idx=0,
-            obj_id=mask_idx,
-            mask=lowres_mask,
+            obj_id=mask_idx+1, # add 1 to prevent start from 0
+            mask=mask_tensor,
         )
         
     masked_frame = origin_frame.copy()
@@ -249,6 +265,7 @@ def segment_everything(predictor, inference_state, origin_frame):
     for i, obj_id in enumerate(out_obj_ids):
         mask = (out_mask_logits[i] > 0.0).cpu().numpy()
         masked_frame = show_mask(mask, image=masked_frame, obj_id=obj_id)
+        masked_frame = labelled_mask(mask,masked_frame, obj_id)
     print(len(out_obj_ids))
     del mask_generator
     return predictor, masked_frame, len(out_obj_ids)
@@ -313,6 +330,7 @@ def begin_track(predictor, inference_state, io_args, input_video, old_video_segm
                 masked_frame = show_mask(mask, image=masked_frame, obj_id=obj_id)
                 mask_output = show_mask(mask, image=mask_output, obj_id=obj_id)
                 mask_np_output[mask[0]==True] = obj_id
+                masked_frame = labelled_mask(mask,masked_frame, obj_id)
         yield masked_frame, None, None, None
         ## save annotated (masked) image
         mask_output_path = os.path.join(io_args['output_mask_dir_png'], f'{out_frame_idx:07d}.png')
@@ -373,6 +391,7 @@ def send_to_board(io_args, frame_num, video_segments, predictor, inference_state
     print(frame_num)
     predictor.reset_state(inference_state)
     for obj_id, obj_mask in video_segments[frame_num].items(): # sam2 doesnt use pythonic indexing for UI
+        
         frame_idx, out_obj_ids, out_mask_logits = predictor.add_new_mask(
                     inference_state,
                     frame_num,
