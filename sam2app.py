@@ -19,13 +19,24 @@ import shutil
 def delete_dir(path):
     if os.path.exists(path):
         shutil.rmtree(path)
+        
+def clear_all(predictor, inference_state, old_video_segments,io_args, obj_counter, obj_ids_dict):
+    del predictor
+    del inference_state
+    del old_video_segments
+    del io_args
+    del obj_counter
+    del obj_ids_dict
 
-def get_meta_from_video(input_video, prgrs_bar=gr.Progress()):
+def get_meta_from_video(input_video, predictor, inference_state, old_video_segments, io_args, obj_counter, obj_ids_dict, prgrs_bar=gr.Progress()):
     if input_video is None:
         return None, None,""
     prgrs_bar(0, desc="Starting")
-#     if predictor is not None:
-#         predictor.reset_state(inference_state)
+    
+    # check if sam has been used before
+    if predictor is not None:
+        print('clearing all')
+        clear_all(predictor, inference_state, old_video_segments, io_args, obj_counter, obj_ids_dict)
     
     video_name = os.path.basename(input_video).split('.')[0]
     # create dir to save result 
@@ -89,7 +100,7 @@ def get_meta_from_video(input_video, prgrs_bar=gr.Progress()):
         torch.backends.cudnn.allow_tf32 = True
     predictor, inference_state = init_sam2(io_args)
     prgrs_bar(1, desc="SAM2 initialised!")
-    return first_frame_rgb, first_frame_rgb, io_args, predictor, inference_state, ""
+    return first_frame_rgb, first_frame_rgb, io_args, predictor, inference_state, 1,0, ""
 
 
 def init_sam2(io_args):
@@ -116,19 +127,7 @@ def init_sam2_everything():
     mask_generator = SAM2AutomaticMaskGenerator(sam2_everything)
     return mask_generator
 
-# def get_click_prompt(click_stack, point):
 
-#     click_stack[0].append(point["coord"])
-#     click_stack[1].append(point["mode"]
-#     )
-    
-#     prompt = {
-#         "points_coord":click_stack[0],
-#         "points_mode":click_stack[1],
-#         "multimask":"True",
-#     }
-
-#     return prompt
 
 def add_new_obj(curr_obj_id, obj_counter):
     obj_counter += 1
@@ -183,7 +182,7 @@ def show_mask(mask, image=None, obj_id=None):
     return mask_image
 
     
-def sam_click(predictor, origin_frame, inference_state, point_mode, obj_ids_dict, curr_obj_id,frame_num, obj_stack,evt:gr.SelectData):
+def sam_click(predictor, origin_frame, inference_state, point_mode, obj_ids_dict, curr_obj_id, frame_num, obj_stack,evt:gr.SelectData):
     """
     Args:
         origin_frame: nd.array
@@ -533,14 +532,22 @@ def sam2_app():
         preprocess_button.click(
             fn=get_meta_from_video,
             inputs=[
-                video_input
+                video_input, 
+                predictor, 
+                inference_state, 
+                old_video_segments, 
+                io_args,
+                obj_counter,
+                obj_ids_dict
             ],
             outputs=[
                 first_input_init, 
                 origin_frame, 
                 io_args, 
                 predictor,
-                inference_state, 
+                inference_state,
+                obj_counter,
+                frame_num  
             ]
         )
         

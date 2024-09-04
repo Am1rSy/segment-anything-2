@@ -652,6 +652,15 @@ class SAM2VideoPredictor(SAM2Base):
                     run_mem_encoder=True,
                 )
                 output_dict[storage_key][frame_idx] = current_out
+            # (Hacky) Delete old state data to clear space after '_run_single_frame_inference' 
+            storage_key, obj_key = "non_cond_frame_outputs", "output_dict_per_obj"
+            oldest_allowed_idx = frame_idx - 16
+            all_frame_idxs = output_dict[storage_key].keys()
+            old_frame_idxs = [idx for idx in all_frame_idxs if idx < oldest_allowed_idx]
+            for old_idx in old_frame_idxs:
+                output_dict[storage_key].pop(old_idx)
+                for objid in inference_state[obj_key].keys():
+                    inference_state[obj_key][objid][storage_key].pop(old_idx)
             # Create slices of per-object outputs for subsequent interaction with each
             # individual object after tracking.
             self._add_output_per_object(
