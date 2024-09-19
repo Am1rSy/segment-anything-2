@@ -9,6 +9,7 @@ from collections import OrderedDict
 import torch
 
 from tqdm import tqdm
+import gradio as gr
 
 from sam2.modeling.sam2_base import NO_OBJ_SCORE, SAM2Base
 from sam2.utils.misc import concat_points, fill_holes_in_mask_scores, load_video_frames
@@ -588,6 +589,7 @@ class SAM2VideoPredictor(SAM2Base):
         start_frame_idx=None,
         max_frame_num_to_track=None,
         reverse=False,
+        progress=gr.Progress()
     ):
         """Propagate the input points across frames to track in the entire video."""
         self.propagate_in_video_preflight(inference_state)
@@ -622,7 +624,7 @@ class SAM2VideoPredictor(SAM2Base):
             )
             processing_order = range(start_frame_idx, end_frame_idx + 1)
 
-        for frame_idx in tqdm(processing_order, desc="propagate in video"):
+        for frame_idx in progress.tqdm(processing_order, desc="Tracking objects in video"):
             # We skip those frames already in consolidated outputs (these are frames
             # that received input clicks or mask). Note that we cannot directly run
             # batched forward on them via `_run_single_frame_inference` because the
@@ -656,11 +658,20 @@ class SAM2VideoPredictor(SAM2Base):
             storage_key, obj_key = "non_cond_frame_outputs", "output_dict_per_obj"
             oldest_allowed_idx = frame_idx - 16
             all_frame_idxs = output_dict[storage_key].keys()
-            old_frame_idxs = [idx for idx in all_frame_idxs if idx < oldest_allowed_idx]
+            old_frame_idxs = [idx for idx in all_frame_idxs if idx < oldest_allowed_idx] # Filters out all frames larger than the specified oldest
+            
+            # if not old_frame_idxs: 
+            #     continue
+            # else:
             for old_idx in old_frame_idxs:
+                # print(old_idx)
                 output_dict[storage_key].pop(old_idx)
                 for objid in inference_state[obj_key].keys():
-                    inference_state[obj_key][objid][storage_key].pop(old_idx)
+                    # if inference_state[obj_key][objid][storage_key][old_idx]
+                    if old_idx in inference_state[obj_key][objid][storage_key].keys():
+                        inference_state[obj_key][objid][storage_key].pop(old_idx)
+                    # print(inference_state[obj_key][objid][storage_key])
+                        
             # Create slices of per-object outputs for subsequent interaction with each
             # individual object after tracking.
             self._add_output_per_object(
