@@ -754,10 +754,25 @@ def sam2_app():
         gr.Markdown(
             '''
             <div style="text-align:center;">
-                <span style="font-size:3em; font-weight:bold;">SAM 2 Demo</span>
+                <span style="font-size:3em; font-weight:bold;">SAM 2 for Cell Tracking</span>
             </div>
+            This is a research demo to track cells using SAM2 as a base. <strong>It is not meant to be used in a commercial setting!</strong>
             '''
         )
+        with gr.Accordion("Instructions", open=False):
+            gr.Markdown(
+                '''
+                ## How to Use?
+                1. Upload video file.
+                2. Click the "Activate SAM" button to initiate preprocessing.
+                3. Click on "Auto Segmentation Mode" to segment majority of object. **Note:** Will miss some object and might segment unintended objects.
+                4. Click on "Add new object" and click on the object to track another object.
+                5. Refine the initial segmentation by specifying its object ID.
+                6. Click on "Start Tracking" to begin tracking.
+                7. Download the files and video.                   
+                '''
+            )
+        
         
         # click_stack = gr.State([[],[]]) # Storage clicks status
         origin_frame = gr.State(None)
