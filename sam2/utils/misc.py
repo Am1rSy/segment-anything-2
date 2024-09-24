@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from PIL import Image
 from tqdm import tqdm
+import gradio as gr
 
 
 def get_sdpa_settings():

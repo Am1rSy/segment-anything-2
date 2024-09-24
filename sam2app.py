@@ -162,7 +162,7 @@ def clear_all(predictor, inference_state, old_video_segments,io_args, obj_counte
     torch.cuda.empty_cache()
     # del obj_ids_dict
 
-def get_meta_from_video(input_video, predictor, inference_state, old_video_segments, io_args, obj_counter, prgrs_bar=gr.Progress()):
+def get_meta_from_video(input_video, predictor, inference_state, old_video_segments, io_args, obj_counter, prgrs_bar=gr.Progress(track_tqdm=True)):
     if input_video is None:
         return None, None,""
     prgrs_bar(0, desc="Starting")
@@ -228,11 +228,12 @@ def get_meta_from_video(input_video, predictor, inference_state, old_video_segme
     
 
     first_frame = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
-    prgrs_bar(0.7, desc="Uploading frames to SAM2!")
+    
     torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
     if torch.cuda.get_device_properties(0).major >= 8:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
+    prgrs_bar(0.7, desc="Uploading frames to SAM2!")
     predictor, inference_state = init_sam2(io_args)
     prgrs_bar(1, desc="SAM2 initialised!")
     return first_frame_rgb, first_frame_rgb, io_args, predictor, inference_state, 1,0, dict(), dict()
@@ -300,22 +301,18 @@ def show_mask(mask, image=None, obj_id=None):
 
     
     h, w = mask.shape[-2:]
-    mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
+    mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1) # h, w, c (4 channels)
     mask_image = (mask_image * 255).astype(np.uint8)  # scale colour with 255
+    # print(mask_image.shape)
     
     ## more elegant way to overlay image and mask (ref: medSAM)
     if image is not None:
         image_h, image_w = image.shape[:2]
         if (image_h, image_w) != (h, w):
             raise ValueError(f"Image dimensions ({image_h}, {image_w}) and mask dimensions ({h}, {w}) do not match")
-        colored_mask = np.zeros_like(image, dtype=np.uint8)
-        for c in range(3): # iterate through the mask and add into combined image
-            colored_mask[..., c] = mask_image[..., c]
-        alpha_mask = mask_image[..., 3] / 255.0 #scale mask pixel value to normal
-        # print(np.unique(mask))
-        for c in range(3): 
-            image[..., c] = np.where(alpha_mask > 0, (1 - alpha_mask) * image[..., c] + alpha_mask * colored_mask[..., c], image[..., c]) # assign value on pixel location that contain the mask
-       
+        alpha_mask = mask_image[..., 3] / 255.0 #scale mask pixel value to normal , (h,w)
+        alpha_mask = np.repeat(alpha_mask[:, :, np.newaxis], 3, axis=-1) # h,w,c
+        image[..., :3] = np.where(alpha_mask > 0, (1 - alpha_mask) * image[..., :3] + alpha_mask * mask_image[..., :3], image[..., :3]) # assign value on pixel location that contain the mask
         return image
     return mask_image
 
@@ -509,7 +506,7 @@ def process_frame(out_frame_idx, io_args, frame_files, new_video_segments, mask_
     cv2.imwrite(combined_output_paths[out_frame_idx], combined_image_bgr)
     
 
-def begin_track(predictor, inference_state, io_args, input_video, old_video_segments, frame_num, progress=gr.Progress()):
+def begin_track(predictor, inference_state, io_args, input_video, old_video_segments, frame_num, progress=gr.Progress(track_tqdm =True)):
     if inference_state is None:
         raise gr.Error("Please load video and 'Activate SAM' first!")
     t1 = time.time()
@@ -556,18 +553,22 @@ def begin_track(predictor, inference_state, io_args, input_video, old_video_segm
     mask_output_paths = [os.path.join(io_args['output_mask_dir_png'], f'{i:07d}.png') for i in range(len(frame_files))]
     combined_output_paths = [os.path.join(io_args['output_masked_frame_dir'], f'{i:07d}.png') for i in range(len(frame_files))]
     print("done creating output files path")
-    # Thread pool execution with progress bar
-    with ThreadPoolExecutor(max_workers=4) as executor:  # Adjust max_workers based on CPU capacity
-        # Submit tasks to the thread pool
-        futures = list(
-            progress.tqdm(
-                executor.submit(
-                    process_frame, 
-                    i, io_args, frame_files, new_video_segments, mask_output_paths, combined_output_paths
-                )
-                for i in range(len(frame_files))
+    
+    # Using threading to extract mask faster (parallel computation)
+    with ThreadPoolExecutor(max_workers=6) as executor:  # Adjust max_workers based on CPU capacity
+        futures = [
+            executor.submit(
+                process_frame, 
+                i, io_args, frame_files, new_video_segments, mask_output_paths, combined_output_paths
             )
-        )
+            for i in range(len(frame_files))
+        ]
+        
+            # Use tqdm to track the progress as tasks complete
+        with tqdm(total=len(futures), desc="Outputting to video") as pbar:
+            for future in as_completed(futures):
+                # result = future.result()  # Get the result of the completed future
+                pbar.update(1)  # Update the progress bar after each task completion
     # for out_frame_idx in progress.tqdm(range(len(frame_files)), desc='Outputting to Video'):
     #     # frame_path = os.path.join(io_args['video_frame'], frame_files[out_frame_idx])
     #     frame_path = frame_paths[out_frame_idx]
