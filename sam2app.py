@@ -362,14 +362,18 @@ def sam_click(predictor, origin_frame, inference_state, point_mode, obj_ids_dict
         masked_frame = show_mask(mask, image=masked_frame, obj_id=obj_id)
         masked_frame = labelled_mask(mask,masked_frame, obj_id)
     # masked_frame =cv2.cvtColor(masked_frame, cv2.COLOR_RGB2BGR)
+    # print(inference_state)
     return predictor, masked_frame, obj_ids_dict, obj_stack
 
-def segment_everything(predictor, inference_state, origin_frame):
+def segment_everything(predictor, inference_state, origin_frame, prgrs_bar=gr.Progress(track_tqdm=True)):
     if inference_state is None:
         raise gr.Error("Please load video and 'Activate SAM' first!")
+    prgrs_bar(0, desc="Starting segmentation")
     t1 = time.time()
+    prgrs_bar(0, desc="Initialising SAM2 and segmenting image")
     mask_generator = init_sam2_everything()
     masks = mask_generator.generate(origin_frame)
+    prgrs_bar(0.5, desc="Postprocessing the masks")
     ## remove background annotations
     sorted_anns = sorted(masks, key=(lambda x: x['area']), reverse=True)
     sorted_anns.pop(0)
@@ -454,11 +458,12 @@ def segment_everything(predictor, inference_state, origin_frame):
         centers.append([int(np.mean(pos_y)),int(np.mean(pos_x))])
 
     print('Calculating the Centers, Completed')
+    prgrs_bar(1, desc="Postprocessing complete")
 
     ann_frame_idx = 0  # the frame index we interact with
 
 
-    for i in range(num_obj):
+    for i in prgrs_bar.tqdm(range(num_obj), desc="Outputting masks to SAM2"):
         ann_obj_id = i + 1
         points = np.array([centers[i]])
         # for labels, `1` means positive click and `0` means negative click
@@ -509,6 +514,9 @@ def process_frame(out_frame_idx, io_args, frame_files, new_video_segments, mask_
 def begin_track(predictor, inference_state, io_args, input_video, old_video_segments, frame_num, progress=gr.Progress(track_tqdm =True)):
     if inference_state is None:
         raise gr.Error("Please load video and 'Activate SAM' first!")
+    if len(inference_state["point_inputs_per_obj"]) == 0:
+        raise gr.Error("No points are provided; please add points first")
+    
     t1 = time.time()
     temp_video_segments = copy.deepcopy(old_video_segments) # need to make copy to prevent same reference with new
     frame_files = sorted([f for f in os.listdir(io_args['video_frame']) if f.endswith('.jpg')])
@@ -546,13 +554,12 @@ def begin_track(predictor, inference_state, io_args, input_video, old_video_segm
     #     ## prepare to add mask
     #         combined_image_bgr = cv2.imread(combined_output_path)
     #         out.write(combined_image_bgr)
+    
     t3 = time.time()
     # Precompute file paths outside the loop
-   # Example of constructing file paths
     print("creating output files path")
     mask_output_paths = [os.path.join(io_args['output_mask_dir_png'], f'{i:07d}.png') for i in range(len(frame_files))]
     combined_output_paths = [os.path.join(io_args['output_masked_frame_dir'], f'{i:07d}.png') for i in range(len(frame_files))]
-    print("done creating output files path")
     
     # Using threading to extract mask faster (parallel computation)
     with ThreadPoolExecutor(max_workers=6) as executor:  # Adjust max_workers based on CPU capacity
@@ -757,7 +764,7 @@ def sam2_app():
             <div style="text-align:center;">
                 <span style="font-size:3em; font-weight:bold;">SAM 2 for Cell Tracking</span>
             </div>
-            This is a research demo to track cells using SAM2 as a base. <strong>It is not meant to be used in a commercial setting!</strong>
+            This is a research demo to track cells using SAM2 as a base. <strong>It is not meant to be used in a commercial setting!</strong>.
             '''
         )
         with gr.Accordion("Instructions", open=False):
@@ -770,7 +777,14 @@ def sam2_app():
                 4. Click on "Add new object" and click on the object to track another object.
                 5. Refine the initial segmentation by specifying its object ID.
                 6. Click on "Start Tracking" to begin tracking.
-                7. Download the files and video.                   
+                7. Download the files and video.  
+                
+                ## What is the "Choose this frame to refine" button?
+                Some objects might not be visible in the initial frame, this function would allow the user to label the new object individually and the new object will be tracked throughout the video.
+                1. Choose the frame using the slider; **Note:** Pay attention to "Chosen Frame" textbox as the slider uses percentages!
+                2. Click on "Add new object" and click on the new object to track it.   
+                3. Click on "Start Tracking" to begin tracking.
+                4. Download the files and video.       
                 '''
             )
         
@@ -789,7 +803,7 @@ def sam2_app():
         obj_stack = gr.State(list())
         
         with gr.Row():
-            with gr.Column(scale=0.5):
+            with gr.Column(scale=1):
                 # tab_vid_in = gr.Tab(label="Input Video")
                 # with tab_vid_in: # add into the tab
                 video_input = gr.Video(label='Input video', sources=['upload'])
@@ -833,7 +847,7 @@ def sam2_app():
                                 )        
                         
                         
-            with gr.Column(scale=0.5):
+            with gr.Column(scale=1):
                 with gr.Accordion("Processed Frames", open=True):
                     processed_frames = gr.Image(label="processed frame", interactive=True)
                     frame_per = gr.Slider(
